@@ -1,4 +1,8 @@
 {
+  "hooks": {
+    "before:init": ["bun run lint", "bun run type-check", "bun test"],
+    "after:bump": "bun run build"
+  },
   "git": {
     "commitMessage": "chore: release v${version}",
     "tagName": "v${version}",
