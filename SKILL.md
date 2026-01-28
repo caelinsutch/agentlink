@@ -31,6 +31,10 @@ agentlinker init --scope=global     # Non-interactive
 agentlinker compose                 # Interactive picker
 agentlinker compose --include-commands=build.md,test.md --agents-md=extend
 
+# Apply without prompts (CI/CD)
+agentlinker apply --scope=project --clients=claude,cursor --yes
+agentlinker apply --scope=global --force --yes
+
 # Preview changes without applying
 agentlinker --dry-run
 
@@ -42,14 +46,16 @@ agentlinker --watch
 
 | Flag | Description |
 |------|-------------|
-| `--scope=global\|project` | Skip interactive scope selection |
+| `--scope=global\|project\|monorepo` | Select scope (required for apply) |
+| `--clients=claude,cursor,...` | Select specific clients |
 | `--dry-run` | Preview changes without applying |
 | `--watch` | Watch for file changes and rebuild |
+| `--force`, `-f` | Overwrite conflicts |
+| `--yes`, `-y` | Skip confirmation prompts |
 | `--include-commands=a.md,b.md` | Compose: select commands from parent |
 | `--include-skills=skill-a/` | Compose: select skills from parent |
 | `--include-hooks=hook-a/` | Compose: select hooks from parent |
 | `--agents-md=inherit\|extend\|override` | How to handle AGENTS.md |
-| `--yes`, `-y` | Skip confirmation prompts |
 
 ## Directory Structure
 

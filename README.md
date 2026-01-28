@@ -42,6 +42,21 @@ agentlinker compose                 # Interactive picker
 agentlinker compose --include-commands=build.md,test.md --agents-md=extend
 ```
 
+### Apply (Non-interactive / CI)
+Apply changes without interactive prompts:
+```bash
+agentlinker apply --scope=project --clients=claude,cursor --yes
+agentlinker apply --scope=global --force --yes
+agentlinker apply --scope=project --dry-run
+```
+
+Flags:
+- `--scope=global|project|monorepo` (required)
+- `--clients=claude,cursor,...` (comma-separated, defaults to detected)
+- `--yes` / `-y` - skip confirmations
+- `--force` / `-f` - overwrite conflicts
+- `--dry-run` - preview without applying
+
 ### Watch (Monorepo)
 Auto-rebuild merged content on file changes:
 ```bash

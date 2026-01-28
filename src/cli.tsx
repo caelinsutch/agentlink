@@ -65,6 +65,8 @@ const includeSkillsFlag = getListFlagValue('include-skills');
 const includeHooksFlag = getListFlagValue('include-hooks');
 const agentsMdFlag = getFlagValue('agents-md') as ExtendBehavior | null;
 const yesFlag = args.includes('--yes') || args.includes('-y');
+const forceFlag = args.includes('--force') || args.includes('-f');
+const clientsFlag = getListFlagValue('clients') as Client[] | null;
 
 type StatusSummary = { name: string; linked: number; missing: number; conflict: number };
 
@@ -992,6 +994,165 @@ async function runCompose(): Promise<void> {
   }
 }
 
+async function runApply(): Promise<void> {
+  if (!scopeFlag) {
+    console.error('Error: --scope flag is required (global, project, or monorepo)');
+    console.error('Usage: agentlinker apply --scope=project [--clients=claude,cursor] [--force] [--yes]');
+    process.exit(1);
+  }
+
+  const validScopes = ['global', 'project', 'monorepo'];
+  if (!validScopes.includes(scopeFlag)) {
+    console.error(`Error: Invalid scope '${scopeFlag}'. Valid scopes: ${validScopes.join(', ')}`);
+    process.exit(1);
+  }
+
+  const scope = scopeFlag as ExtendedScope;
+  const validClients: Client[] = ['claude', 'factory', 'codex', 'cursor', 'opencode'];
+
+  let clients: Client[];
+  if (clientsFlag) {
+    const invalidClients = clientsFlag.filter((c) => !validClients.includes(c as Client));
+    if (invalidClients.length > 0) {
+      console.error(`Error: Invalid client(s): ${invalidClients.join(', ')}`);
+      console.error(`Valid clients: ${validClients.join(', ')}`);
+      process.exit(1);
+    }
+    clients = clientsFlag as Client[];
+  } else {
+    const detectionResults = await detectAllClients();
+    const detectedClients = validClients.filter((client) => detectionResults.get(client)?.detected);
+    clients = detectedClients.length > 0 ? detectedClients : validClients;
+  }
+
+  console.log(`Applying agentlinker (${scope} scope)${dryRun ? ' [dry-run]' : ''}...`);
+  console.log(`Clients: ${formatClients(clients)}`);
+
+  // Handle monorepo scope
+  let chain: InheritanceChain | null = null;
+  if (scope === 'monorepo') {
+    chain = await detectMonorepoChain();
+    if (!hasMonorepoParent(chain)) {
+      console.error('Error: No parent .agents folder detected. Monorepo scope requires a parent config.');
+      process.exit(1);
+    }
+  }
+
+  console.log('Scanning...');
+
+  try {
+    if (scope === 'monorepo' && chain) {
+      // Monorepo flow
+      const roots = resolveMonorepoRoots({ scope: 'monorepo', chain });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const plan = await buildMonorepoLinkPlan({ chain, clients });
+
+      console.log(`Found ${plan.changes.length} changes, ${plan.conflicts.length} conflicts`);
+
+      if (plan.changes.length === 0) {
+        console.log('No changes to apply.');
+        return;
+      }
+
+      if (plan.conflicts.length > 0 && !forceFlag && !yesFlag) {
+        console.error(`Error: ${plan.conflicts.length} conflict(s) found. Use --force to overwrite.`);
+        for (const conflict of plan.conflicts) {
+          console.error(`  - ${conflict.target}: ${conflict.reason}`);
+        }
+        process.exit(1);
+      }
+
+      if (dryRun) {
+        console.log('Dry-run mode - no changes made.');
+        for (const change of plan.changes) {
+          if (change.type === 'link') {
+            console.log(`  Would link: ${change.target} -> ${change.source}`);
+          }
+        }
+        return;
+      }
+
+      console.log('Applying changes...');
+      const backup = await createBackupSession({
+        canonicalRoot: roots.canonicalRoot,
+        scope: 'project',
+        operation: 'apply-command',
+        timestamp,
+      });
+      const { applyLinkPlan } = await import('./core/apply.js');
+      const result = await applyLinkPlan(plan, { backup, force: forceFlag });
+      await finalizeBackup(backup);
+      console.log(
+        `Done: ${result.applied} links created${result.conflicts > 0 ? `, ${result.conflicts} conflicts ${forceFlag ? 'overwritten' : 'skipped'}` : ''}`
+      );
+    } else {
+      // Global or project flow
+      const roots = resolveRoots({ scope: scope as Scope });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const migrate = await scanMigration({ scope: scope as Scope, clients });
+      const plan = await buildLinkPlan({ scope: scope as Scope, clients });
+
+      const totalChanges = migrate.auto.length + plan.changes.length;
+      const totalConflicts = migrate.conflicts.length + plan.conflicts.length;
+      console.log(`Found ${totalChanges} changes, ${totalConflicts} conflicts`);
+
+      if (totalChanges === 0) {
+        console.log('No changes to apply.');
+        return;
+      }
+
+      if (totalConflicts > 0 && !forceFlag && !yesFlag) {
+        console.error(`Error: ${totalConflicts} conflict(s) found. Use --force to overwrite.`);
+        for (const conflict of plan.conflicts) {
+          console.error(`  - ${conflict.target}: ${conflict.reason}`);
+        }
+        process.exit(1);
+      }
+
+      if (dryRun) {
+        console.log('Dry-run mode - no changes made.');
+        for (const item of migrate.auto) {
+          console.log(`  Would migrate: ${item.sourcePath} -> ${item.targetPath}`);
+        }
+        for (const change of plan.changes) {
+          if (change.type === 'link') {
+            console.log(`  Would link: ${change.target} -> ${change.source}`);
+          }
+        }
+        return;
+      }
+
+      console.log('Applying changes...');
+      const backup = await createBackupSession({
+        canonicalRoot: roots.canonicalRoot,
+        scope: scope as Scope,
+        operation: 'apply-command',
+        timestamp,
+      });
+      await preflightBackup({
+        backup,
+        linkPlan: plan,
+        migratePlan: migrate,
+        selections: new Map(),
+        forceLinks: forceFlag,
+      });
+      const result = await applyMigration(migrate, new Map(), {
+        scope: scope as Scope,
+        clients,
+        backup,
+        forceLinks: forceFlag,
+      });
+      await finalizeBackup(backup);
+      console.log(
+        `Done: ${result.copied} migrated, ${result.links.applied} links created${result.links.conflicts > 0 ? `, ${result.links.conflicts} conflicts ${forceFlag ? 'overwritten' : 'skipped'}` : ''}`
+      );
+    }
+  } catch (err: any) {
+    console.error(`Error: ${err?.message || err}`);
+    process.exit(1);
+  }
+}
+
 async function run(): Promise<void> {
   const titleParts = [chalk.cyan(appTitle)];
   if (dryRun) {
@@ -1115,6 +1276,11 @@ if (subcommand === 'init') {
 } else if (subcommand === 'compose') {
   runCompose().catch((err) => {
     note(String(err?.message || err), 'Fatal error');
+    process.exit(1);
+  });
+} else if (subcommand === 'apply') {
+  runApply().catch((err) => {
+    console.error(`Fatal error: ${err?.message || err}`);
     process.exit(1);
   });
 } else if (watchMode) {
