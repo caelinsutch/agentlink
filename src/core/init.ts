@@ -1,6 +1,6 @@
 import os from 'os';
 import path from 'path';
-import { ensureDir, pathExists, writeText } from '../utils/fs.js';
+import { ensureDir, pathExists, readText, writeText } from '../utils/fs.js';
 import { detectMonorepoChain, hasMonorepoParent } from './monorepo.js';
 
 export type InitScope = 'global' | 'project';
@@ -174,4 +174,43 @@ export async function detectMonorepoContext(opts: { projectRoot?: string; homeDi
     homeDir: opts.homeDir,
   });
   return hasMonorepoParent(chain);
+}
+
+export type PostinstallResult = {
+  added: boolean;
+  reason: 'added' | 'already-exists' | 'no-package-json' | 'parse-error';
+};
+
+export async function addPostinstallHook(projectRoot?: string): Promise<PostinstallResult> {
+  const root = path.resolve(projectRoot || process.cwd());
+  const packageJsonPath = path.join(root, 'package.json');
+
+  if (!(await pathExists(packageJsonPath))) {
+    return { added: false, reason: 'no-package-json' };
+  }
+
+  try {
+    const content = await readText(packageJsonPath);
+    const pkg = JSON.parse(content);
+
+    if (!pkg.scripts) {
+      pkg.scripts = {};
+    }
+
+    const existingPostinstall = pkg.scripts.postinstall || '';
+    if (existingPostinstall.includes('agentlinker repair')) {
+      return { added: false, reason: 'already-exists' };
+    }
+
+    if (existingPostinstall) {
+      pkg.scripts.postinstall = `${existingPostinstall} && agentlinker repair`;
+    } else {
+      pkg.scripts.postinstall = 'agentlinker repair';
+    }
+
+    await writeText(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
+    return { added: true, reason: 'added' };
+  } catch {
+    return { added: false, reason: 'parse-error' };
+  }
 }

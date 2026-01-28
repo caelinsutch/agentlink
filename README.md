@@ -69,6 +69,30 @@ Preview changes without applying:
 agentlinker --dry-run
 ```
 
+### Repair (Postinstall)
+Fast, silent symlink repair - ideal for postinstall hooks:
+```bash
+agentlinker repair
+```
+
+The `repair` command:
+- Auto-detects scope (project > monorepo > global)
+- Auto-detects installed clients
+- Silently recreates symlinks
+- Idempotent - safe to run repeatedly
+- Exits 0 on success, non-zero on failure
+
+Add to your `package.json` for automatic symlink repair after installs:
+```json
+{
+  "scripts": {
+    "postinstall": "agentlinker repair"
+  }
+}
+```
+
+When running `agentlinker init`, you'll be prompted to add this automatically.
+
 ## What it does
 
 - Keeps `.agents` as the source of truth.

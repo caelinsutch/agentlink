@@ -15,13 +15,14 @@ import {
 } from './core/config.js';
 import { detectAllClients } from './core/detect.js';
 import { discoverParentResources } from './core/discover.js';
-import { detectMonorepoContext, type InitScope, initAgentsFolder } from './core/init.js';
+import { addPostinstallHook, detectMonorepoContext, type InitScope, initAgentsFolder } from './core/init.js';
 import type { MigrationCandidate } from './core/migrate.js';
 import { applyMigration, scanMigration } from './core/migrate.js';
 import { detectMonorepoChain, formatInheritanceDisplay, hasMonorepoParent } from './core/monorepo.js';
 import { resolveMonorepoRoots, resolveRoots } from './core/paths.js';
 import { buildLinkPlan, buildMonorepoLinkPlan } from './core/plan.js';
 import { preflightBackup } from './core/preflight.js';
+import { repair } from './core/repair.js';
 import { getLinkStatus, getMonorepoLinkStatus } from './core/status.js';
 import type { Client, ExtendBehavior, IncludeConfig, InheritanceChain, LinkStatus, Scope } from './core/types.js';
 import { undoLastChange } from './core/undo.js';
@@ -641,8 +642,9 @@ async function runInit(): Promise<void> {
       createConfig,
     });
 
+    let postinstallAdded = false;
+
     if (nonInteractive) {
-      // Non-interactive output
       console.log(`Created: ${result.agentsRoot}`);
       if (result.created.length > 0) {
         for (const item of result.created) {
@@ -655,8 +657,6 @@ async function runInit(): Promise<void> {
         }
       }
     } else {
-      // Interactive output
-      // Show results
       const resultLines: string[] = [`Location: ${result.agentsRoot}`, ''];
 
       if (result.created.length > 0) {
@@ -676,7 +676,24 @@ async function runInit(): Promise<void> {
 
       note(resultLines.join('\n'), 'Result');
 
-      // Show next steps
+      if (initScope === 'project') {
+        const hookChoice = await confirm({
+          message: 'Add postinstall hook to auto-repair symlinks after npm/bun install?',
+        });
+
+        if (!isCancel(hookChoice) && hookChoice) {
+          const hookResult = await addPostinstallHook();
+          if (hookResult.added) {
+            note('Added "agentlinker repair" to package.json postinstall script', 'Postinstall hook');
+            postinstallAdded = true;
+          } else if (hookResult.reason === 'already-exists') {
+            note('Postinstall hook already exists', 'Postinstall hook');
+          } else if (hookResult.reason === 'no-package-json') {
+            note('No package.json found - skipping postinstall hook', 'Postinstall hook');
+          }
+        }
+      }
+
       const nextStepsLines = [
         '1. Edit AGENTS.md to describe your project and coding conventions',
         '2. Add custom commands to the commands/ directory',
@@ -687,6 +704,11 @@ async function runInit(): Promise<void> {
       if (result.isMonorepo && !createConfig) {
         nextStepsLines.push('');
         nextStepsLines.push(chalk.dim('Tip: Run `agentlinker init` again to add config.yaml for monorepo settings'));
+      }
+
+      if (!postinstallAdded && initScope === 'project') {
+        nextStepsLines.push('');
+        nextStepsLines.push(chalk.dim('Tip: Add "agentlinker repair" to postinstall for automatic symlink repair'));
       }
 
       note(nextStepsLines.join('\n'), 'Next steps');
@@ -1267,7 +1289,22 @@ async function run(): Promise<void> {
   outro('Bye');
 }
 
-// Entry point: dispatch based on subcommand and flags
+async function runRepair(): Promise<void> {
+  const result = await repair();
+
+  if (result.errors.length > 0) {
+    for (const error of result.errors) {
+      console.error(error);
+    }
+    process.exit(1);
+  }
+
+  const total = result.created + result.updated;
+  if (total > 0) {
+    console.log(`agentlinker: ${result.created} created, ${result.updated} updated`);
+  }
+}
+
 if (subcommand === 'init') {
   runInit().catch((err) => {
     note(String(err?.message || err), 'Fatal error');
@@ -1281,6 +1318,11 @@ if (subcommand === 'init') {
 } else if (subcommand === 'apply') {
   runApply().catch((err) => {
     console.error(`Fatal error: ${err?.message || err}`);
+    process.exit(1);
+  });
+} else if (subcommand === 'repair') {
+  runRepair().catch((err) => {
+    console.error(`Error: ${err?.message || err}`);
     process.exit(1);
   });
 } else if (watchMode) {
